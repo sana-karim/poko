@@ -3,10 +3,19 @@
 #include <U8g2lib.h>
 
 // ============================================================
-// POKO — Step 1: Animated Eyes
+// POKO
+// A tiny life on your desk.
+//
+// Current features:
+// 👀 Animated eyes
+// 😴 Sleep / Wake
 // ============================================================
 
+
+// ============================================================
 // OLED
+// ============================================================
+
 #define OLED_SDA 8
 #define OLED_SCL 9
 #define OLED_ADDRESS 0x3C
@@ -16,16 +25,18 @@ U8G2_SH1106_128X64_NONAME_F_HW_I2C display(
   U8X8_PIN_NONE
 );
 
-// ------------------------------------------------------------
+
+// ============================================================
 // Screen
-// ------------------------------------------------------------
+// ============================================================
 
 const int SCREEN_W = 128;
 const int SCREEN_H = 64;
 
-// ------------------------------------------------------------
+
+// ============================================================
 // Eyes
-// ------------------------------------------------------------
+// ============================================================
 
 const int LEFT_EYE_X  = 8;
 const int RIGHT_EYE_X = 68;
@@ -39,9 +50,10 @@ const int PUPIL_R = 9;
 const int MAX_PUPIL_X = 12;
 const int MAX_PUPIL_Y = 7;
 
-// ------------------------------------------------------------
-// Eye state
-// ------------------------------------------------------------
+
+// ============================================================
+// Eye movement
+// ============================================================
 
 float pupilX = 0;
 float pupilY = 0;
@@ -49,32 +61,74 @@ float pupilY = 0;
 float targetPupilX = 0;
 float targetPupilY = 0;
 
-// ------------------------------------------------------------
-// Blinking
-// ------------------------------------------------------------
+unsigned long nextLookTime = 0;
+
+
+// ============================================================
+// Eye closing amount
+//
+// 0.0 = completely open
+// 1.0 = completely closed
+//
+// This is the SINGLE source of truth for eyelid position.
+// ============================================================
+
+float eyeCloseAmount = 0.0;
+
+
+// ============================================================
+// Normal blink
+// ============================================================
 
 bool blinking = false;
-
-float blinkAmount = 0.0;
 
 unsigned long blinkStartTime = 0;
 unsigned long nextBlinkTime = 0;
 
-const unsigned long BLINK_DURATION = 180;
 
-// ------------------------------------------------------------
-// Looking
-// ------------------------------------------------------------
+// ============================================================
+// Sleep / Wake state
+// ============================================================
 
-unsigned long nextLookTime = 0;
+enum PokoState
+{
+  POKO_AWAKE,
+  POKO_SLEEPY,
+  POKO_SLEEPING,
+  POKO_WAKING
+};
 
-// ------------------------------------------------------------
+PokoState pokoState = POKO_AWAKE;
+
+unsigned long stateStartTime = 0;
+
+
+// ============================================================
+// TEST TIMINGS
+//
+// Awake      = 15 seconds
+// Sleepy     = 2.5 seconds
+// Sleeping   = 10 seconds
+// Waking     = 2 seconds
+//
+// These are intentionally short for testing.
+// We can increase them later.
+// ============================================================
+
+const unsigned long AWAKE_TIME   = 15000;
+const unsigned long SLEEPY_TIME  = 2500;
+const unsigned long SLEEP_TIME   = 10000;
+const unsigned long WAKING_TIME  = 2000;
+
+
+// ============================================================
 // Frame timing
-// ------------------------------------------------------------
+// ============================================================
 
 unsigned long lastFrameTime = 0;
 
 const unsigned long FRAME_INTERVAL = 16;
+
 
 // ============================================================
 // Smooth movement
@@ -89,6 +143,7 @@ float smoothApproach(
   return current + (target - current) * speed;
 }
 
+
 // ============================================================
 // Choose where Poko looks
 // ============================================================
@@ -99,42 +154,76 @@ void chooseLookDirection()
 
   switch (direction)
   {
+    // --------------------------------------------------------
     // Center
+    // --------------------------------------------------------
+
     case 0:
+
       targetPupilX = 0;
       targetPupilY = 0;
+
       break;
 
+
+    // --------------------------------------------------------
     // Left
+    // --------------------------------------------------------
+
     case 1:
+
       targetPupilX = -MAX_PUPIL_X;
       targetPupilY = random(-3, 4);
+
       break;
 
+
+    // --------------------------------------------------------
     // Right
+    // --------------------------------------------------------
+
     case 2:
+
       targetPupilX = MAX_PUPIL_X;
       targetPupilY = random(-3, 4);
+
       break;
 
+
+    // --------------------------------------------------------
     // Up
+    // --------------------------------------------------------
+
     case 3:
+
       targetPupilX = random(-5, 6);
       targetPupilY = -MAX_PUPIL_Y;
+
       break;
 
+
+    // --------------------------------------------------------
     // Down
+    // --------------------------------------------------------
+
     case 4:
+
       targetPupilX = random(-5, 6);
       targetPupilY = MAX_PUPIL_Y;
+
       break;
   }
 
-  nextLookTime = millis() + random(1200, 3000);
+
+  // Choose another direction after 1.2–3 seconds
+
+  nextLookTime =
+    millis() + random(1200, 3000);
 }
 
+
 // ============================================================
-// Start blink
+// Start normal blink
 // ============================================================
 
 void startBlink()
@@ -146,51 +235,85 @@ void startBlink()
   }
 }
 
+
 // ============================================================
-// Update blink animation
+// Update normal blink
+//
+// Close → pause → open
+//
+// Only active while Poko is awake.
 // ============================================================
 
 void updateBlink()
 {
+  // Normal blinking is ONLY allowed while awake.
+
+  if (pokoState != POKO_AWAKE)
+  {
+    return;
+  }
+
+
+  // ----------------------------------------------------------
+  // Waiting for next blink
+  // ----------------------------------------------------------
+
   if (!blinking)
   {
+    eyeCloseAmount = 0.0;
+
+
     if (millis() >= nextBlinkTime)
     {
       blinking = true;
       blinkStartTime = millis();
     }
 
+
     return;
   }
 
-  unsigned long elapsed =
-    millis() - blinkStartTime;
+
+  // ----------------------------------------------------------
+  // Blink timing
+  // ----------------------------------------------------------
 
   const unsigned long CLOSE_TIME  = 100;
   const unsigned long CLOSED_TIME = 70;
   const unsigned long OPEN_TIME   = 140;
 
+
+  unsigned long elapsed =
+    millis() - blinkStartTime;
+
+
   // ----------------------------------------------------------
-  // Closing
+  // Close
   // ----------------------------------------------------------
 
   if (elapsed < CLOSE_TIME)
   {
-    blinkAmount =
-      (float)elapsed / CLOSE_TIME;
+    eyeCloseAmount =
+      (float)elapsed /
+      (float)CLOSE_TIME;
   }
 
+
   // ----------------------------------------------------------
-  // Completely closed
+  // Fully closed
   // ----------------------------------------------------------
 
-  else if (elapsed < CLOSE_TIME + CLOSED_TIME)
+  else if (
+    elapsed <
+    CLOSE_TIME + CLOSED_TIME
+  )
   {
-    blinkAmount = 1.0;
+    eyeCloseAmount = 1.0;
   }
 
+
   // ----------------------------------------------------------
-  // Opening
+  // Open
   // ----------------------------------------------------------
 
   else if (
@@ -205,21 +328,23 @@ void updateBlink()
       CLOSE_TIME -
       CLOSED_TIME;
 
-    blinkAmount =
+
+    eyeCloseAmount =
       1.0 -
       (
         (float)openElapsed /
-        OPEN_TIME
+        (float)OPEN_TIME
       );
   }
 
+
   // ----------------------------------------------------------
-  // Finished
+  // Blink finished
   // ----------------------------------------------------------
 
   else
   {
-    blinkAmount = 0.0;
+    eyeCloseAmount = 0.0;
 
     blinking = false;
 
@@ -227,16 +352,296 @@ void updateBlink()
       millis() + random(1800, 5000);
   }
 
-  blinkAmount =
+
+  eyeCloseAmount =
     constrain(
-      blinkAmount,
+      eyeCloseAmount,
       0.0,
       1.0
     );
 }
 
+
+// ============================================================
+// Sleep animation amount
+//
+// Returns:
+//
+// 0.0 = open
+// 1.0 = closed
+//
+// Uses SmoothStep so the transition starts and ends gently.
+// ============================================================
+
+float getSleepAmount()
+{
+  unsigned long elapsed =
+    millis() - stateStartTime;
+
+
+  // ----------------------------------------------------------
+  // Sleepy
+  //
+// Smoothly close eyes.
+// ----------------------------------------------------------
+
+  if (pokoState == POKO_SLEEPY)
+  {
+    float progress =
+      (float)elapsed /
+      (float)SLEEPY_TIME;
+
+
+    progress =
+      constrain(
+        progress,
+        0.0,
+        1.0
+      );
+
+
+    // SmoothStep
+
+    float smoothProgress =
+      progress *
+      progress *
+      (3.0 - 2.0 * progress);
+
+
+    return smoothProgress;
+  }
+
+
+  // ----------------------------------------------------------
+  // Sleeping
+  // ----------------------------------------------------------
+
+  if (pokoState == POKO_SLEEPING)
+  {
+    return 1.0;
+  }
+
+
+  // ----------------------------------------------------------
+  // Waking
+  //
+// Smoothly open eyes.
+// ----------------------------------------------------------
+
+  if (pokoState == POKO_WAKING)
+  {
+    float progress =
+      (float)elapsed /
+      (float)WAKING_TIME;
+
+
+    progress =
+      constrain(
+        progress,
+        0.0,
+        1.0
+      );
+
+
+    // SmoothStep
+
+    float smoothProgress =
+      progress *
+      progress *
+      (3.0 - 2.0 * progress);
+
+
+    return 1.0 - smoothProgress;
+  }
+
+
+  return 0.0;
+}
+
+
+// ============================================================
+// Update sleep / wake animation
+//
+// This function owns eyeCloseAmount whenever Poko is NOT awake.
+// ============================================================
+
+void updateSleepAnimation()
+{
+  // Normal blinking owns eyeCloseAmount while awake.
+
+  if (pokoState == POKO_AWAKE)
+  {
+    return;
+  }
+
+
+  eyeCloseAmount =
+    getSleepAmount();
+
+
+  eyeCloseAmount =
+    constrain(
+      eyeCloseAmount,
+      0.0,
+      1.0
+    );
+}
+
+
+// ============================================================
+// Update Poko state
+// ============================================================
+
+void updatePokoState()
+{
+  unsigned long now = millis();
+
+
+  switch (pokoState)
+  {
+    // ========================================================
+    // AWAKE
+    // ========================================================
+
+    case POKO_AWAKE:
+
+      if (
+        now - stateStartTime >=
+        AWAKE_TIME
+      )
+      {
+        pokoState = POKO_SLEEPY;
+
+        stateStartTime = now;
+
+
+        // Stop normal blinking
+
+        blinking = false;
+
+
+        // Start sleep animation fully open
+
+        eyeCloseAmount = 0.0;
+
+
+        // Center eyes
+
+        targetPupilX = 0;
+        targetPupilY = 0;
+
+        pupilX = 0;
+        pupilY = 0;
+
+
+        Serial.println(
+          "POKO is getting sleepy..."
+        );
+      }
+
+      break;
+
+
+    // ========================================================
+    // SLEEPY
+    // ========================================================
+
+    case POKO_SLEEPY:
+
+      if (
+        now - stateStartTime >=
+        SLEEPY_TIME
+      )
+      {
+        pokoState = POKO_SLEEPING;
+
+        stateStartTime = now;
+
+
+        Serial.println(
+          "POKO is sleeping..."
+        );
+      }
+
+      break;
+
+
+    // ========================================================
+    // SLEEPING
+    // ========================================================
+
+    case POKO_SLEEPING:
+
+      if (
+        now - stateStartTime >=
+        SLEEP_TIME
+      )
+      {
+        pokoState = POKO_WAKING;
+
+        stateStartTime = now;
+
+
+        Serial.println(
+          "POKO is waking up..."
+        );
+      }
+
+      break;
+
+
+    // ========================================================
+    // WAKING
+    // ========================================================
+
+    case POKO_WAKING:
+
+      if (
+        now - stateStartTime >=
+        WAKING_TIME
+      )
+      {
+        pokoState = POKO_AWAKE;
+
+        stateStartTime = now;
+
+
+        // Fully open
+
+        eyeCloseAmount = 0.0;
+
+
+        // Reset blink system
+
+        blinking = false;
+
+        nextBlinkTime =
+          millis() + random(1800, 5000);
+
+
+        // Start looking around
+
+        chooseLookDirection();
+
+
+        Serial.println(
+          "POKO is awake!"
+        );
+      }
+
+      break;
+  }
+}
+
+
 // ============================================================
 // Draw one eye
+//
+// IMPORTANT:
+//
+// This function ONLY renders.
+//
+// It does NOT modify animation state.
 // ============================================================
 
 void drawEye(
@@ -246,8 +651,16 @@ void drawEye(
   float pupilOffsetY
 )
 {
+  float closeAmount =
+    constrain(
+      eyeCloseAmount,
+      0.0,
+      1.0
+    );
+
+
   // ----------------------------------------------------------
-  // 1. Draw the normal eye
+  // Draw white eye
   // ----------------------------------------------------------
 
   display.setDrawColor(1);
@@ -260,52 +673,74 @@ void drawEye(
     8
   );
 
+
   // ----------------------------------------------------------
-  // 2. Draw pupil
+  // Calculate pupil position
   // ----------------------------------------------------------
 
-  if (blinkAmount < 0.5)
+  int pupilCenterX =
+    x +
+    EYE_W / 2 +
+    (int)pupilOffsetX;
+
+
+  int pupilCenterY =
+    y +
+    EYE_H / 2 +
+    (int)pupilOffsetY;
+
+
+  // ----------------------------------------------------------
+  // Draw pupil
+  //
+  // Pupil is drawn BEFORE eyelids.
+  // ----------------------------------------------------------
+
+  display.setDrawColor(0);
+
+  display.drawDisc(
+    pupilCenterX,
+    pupilCenterY,
+    PUPIL_R
+  );
+
+
+  // ----------------------------------------------------------
+  // Draw eyelids
+  //
+  // The eyelids cover the pupil naturally.
+  // ----------------------------------------------------------
+
+  if (closeAmount > 0.0)
   {
-    int pupilCenterX =
-      x + EYE_W / 2 + pupilOffsetX;
-
-    int pupilCenterY =
-      y + EYE_H / 2 + pupilOffsetY;
-
     display.setDrawColor(0);
 
-    display.drawDisc(
-      pupilCenterX,
-      pupilCenterY,
-      PUPIL_R
-    );
-  }
-
-  // ----------------------------------------------------------
-  // 3. Close the eye using eyelids
-  // ----------------------------------------------------------
-
-  if (blinkAmount > 0.0)
-  {
-    display.setDrawColor(0);
 
     int coverHeight =
-      (EYE_H / 2) * blinkAmount;
+      (int)(
+        (EYE_H / 2.0) *
+        closeAmount
+      );
 
-    // Top eyelid
+
     if (coverHeight > 0)
     {
+      // ------------------------------------------------------
+      // Top eyelid
+      // ------------------------------------------------------
+
       display.drawBox(
         x,
         y,
         EYE_W,
         coverHeight
       );
-    }
 
-    // Bottom eyelid
-    if (coverHeight > 0)
-    {
+
+      // ------------------------------------------------------
+      // Bottom eyelid
+      // ------------------------------------------------------
+
       display.drawBox(
         x,
         y + EYE_H - coverHeight,
@@ -315,37 +750,79 @@ void drawEye(
     }
   }
 
-  // Restore white drawing color
+
   display.setDrawColor(1);
 }
 
+
 // ============================================================
-// Draw Poko's face
+// Draw Poko's complete face
 // ============================================================
 
 void drawFace()
 {
   display.clearBuffer();
 
+
+  // ----------------------------------------------------------
+  // Pupil behavior
+  //
+  // During sleep/wake:
+  // keep pupils centered.
+  //
+  // During awake:
+  // use normal eye movement.
+  // ----------------------------------------------------------
+
+  float drawPupilX = pupilX;
+  float drawPupilY = pupilY;
+
+
+  if (
+    pokoState == POKO_SLEEPY ||
+    pokoState == POKO_SLEEPING ||
+    pokoState == POKO_WAKING
+  )
+  {
+    drawPupilX = 0;
+    drawPupilY = 0;
+  }
+
+
+  // ----------------------------------------------------------
+  // Left eye
+  // ----------------------------------------------------------
+
   drawEye(
     LEFT_EYE_X,
     EYE_Y,
-    pupilX,
-    pupilY
+    drawPupilX,
+    drawPupilY
   );
+
+
+  // ----------------------------------------------------------
+  // Right eye
+  // ----------------------------------------------------------
 
   drawEye(
     RIGHT_EYE_X,
     EYE_Y,
-    pupilX,
-    pupilY
+    drawPupilX,
+    drawPupilY
   );
+
+
+  // ----------------------------------------------------------
+  // Send frame to OLED
+  // ----------------------------------------------------------
 
   display.sendBuffer();
 }
 
+
 // ============================================================
-// Setup
+// SETUP
 // ============================================================
 
 void setup()
@@ -354,28 +831,58 @@ void setup()
 
   delay(300);
 
-  Serial.println();
-  Serial.println("==============================");
-  Serial.println("          POKO");
-  Serial.println("     A tiny life on your desk");
-  Serial.println("==============================");
 
+  Serial.println();
+  Serial.println(
+    "=============================="
+  );
+  Serial.println(
+    "          POKO"
+  );
+  Serial.println(
+    "   A tiny life on your desk"
+  );
+  Serial.println(
+    "=============================="
+  );
+
+
+  // ==========================================================
   // I2C
+  // ==========================================================
+
   Wire.begin(
     OLED_SDA,
     OLED_SCL
   );
 
+
+  // ==========================================================
   // OLED address
+  // ==========================================================
+
   display.setI2CAddress(
     OLED_ADDRESS << 1
   );
 
+
+  // ==========================================================
   // Start OLED
+  // ==========================================================
+
   display.begin();
 
-  // Random animation timing
+
+  // ==========================================================
+  // Random animation seed
+  // ==========================================================
+
   randomSeed(micros());
+
+
+  // ==========================================================
+  // Initial eye position
+  // ==========================================================
 
   pupilX = 0;
   pupilY = 0;
@@ -383,50 +890,132 @@ void setup()
   targetPupilX = 0;
   targetPupilY = 0;
 
+
+  // ==========================================================
+  // Initial timers
+  // ==========================================================
+
   nextBlinkTime =
     millis() + random(1500, 3500);
 
   nextLookTime =
     millis() + random(1000, 2000);
 
-  Serial.println("OLED initialized.");
-  Serial.println("POKO eyes starting...");
+
+  // ==========================================================
+  // Initial Poko state
+  // ==========================================================
+
+  pokoState = POKO_AWAKE;
+
+  stateStartTime = millis();
+
+  eyeCloseAmount = 0.0;
+
+
+  // ==========================================================
+  // Serial information
+  // ==========================================================
+
+  Serial.println(
+    "OLED initialized."
+  );
+
+  Serial.println(
+    "POKO eyes starting..."
+  );
+
+  Serial.println(
+    "Sleep/wake system enabled."
+  );
 }
 
+
 // ============================================================
-// Main loop
+// LOOP
 // ============================================================
 
 void loop()
 {
   unsigned long now = millis();
 
-  // Choose a new direction
-  if (now >= nextLookTime)
+
+  // ==========================================================
+  // Update Poko state
+  // ==========================================================
+
+  updatePokoState();
+
+
+  // ==========================================================
+  // Normal eye movement
+  //
+  // Only active while awake.
+  // ==========================================================
+
+  if (pokoState == POKO_AWAKE)
   {
-    chooseLookDirection();
+    // --------------------------------------------------------
+    // Choose new direction
+    // --------------------------------------------------------
+
+    if (now >= nextLookTime)
+    {
+      chooseLookDirection();
+    }
+
+
+    // --------------------------------------------------------
+    // Smooth X movement
+    // --------------------------------------------------------
+
+    pupilX =
+      smoothApproach(
+        pupilX,
+        targetPupilX,
+        0.08
+      );
+
+
+    // --------------------------------------------------------
+    // Smooth Y movement
+    // --------------------------------------------------------
+
+    pupilY =
+      smoothApproach(
+        pupilY,
+        targetPupilY,
+        0.08
+      );
   }
 
-  // Smooth eye movement
-  pupilX =
-    smoothApproach(
-      pupilX,
-      targetPupilX,
-      0.08
-    );
 
-  pupilY =
-    smoothApproach(
-      pupilY,
-      targetPupilY,
-      0.08
-    );
+  // ==========================================================
+  // Sleep / wake animation
+  //
+  // Owns eyeCloseAmount outside awake state.
+  // ==========================================================
 
-  // Update blinking
+  updateSleepAnimation();
+
+
+  // ==========================================================
+  // Normal blinking
+  //
+  // Owns eyeCloseAmount while awake.
+  // ==========================================================
+
   updateBlink();
 
-  // ~60 FPS
-  if (now - lastFrameTime >= FRAME_INTERVAL)
+
+  // ==========================================================
+  // Render at approximately 60 FPS
+  // ==========================================================
+
+  if (
+    now - lastFrameTime >=
+    FRAME_INTERVAL
+  )
   {
     lastFrameTime = now;
 
