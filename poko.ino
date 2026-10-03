@@ -134,6 +134,18 @@ unsigned long lastDebugPrint = 0;
 
 const unsigned long DEBUG_INTERVAL = 250;
 
+// ------------------------------------------------------------
+// USB SERIAL SAFETY
+//
+// Serial is debug-only. Never allow a closed/disconnected USB
+// monitor to block the main POKO animation loop.
+// ------------------------------------------------------------
+
+bool debugSerialReady(size_t requiredBytes = 256)
+{
+  return Serial.availableForWrite() >= requiredBytes;
+}
+
 // ============================================================
 // TOUCH SENSOR
 // ============================================================
@@ -407,7 +419,10 @@ void startHappyExpression(
 
   currentHappyDuration = duration;
 
-  Serial.println("POKO is happy!");
+  if (debugSerialReady())
+  {
+    Serial.println("POKO is happy!");
+  }
 }
 
 // ============================================================
@@ -432,7 +447,10 @@ void startAngryExpression()
 
   angryStartTime = millis();
 
-  Serial.println("POKO is angry!");
+  if (debugSerialReady())
+  {
+    Serial.println("POKO is angry!");
+  }
 }
 
 // ============================================================
@@ -625,7 +643,10 @@ void wakePokoFromTouch()
   // Remember that the user woke POKO by touch.
   touchWakeReaction = true;
 
-  Serial.println("POKO woke up because of touch!");
+  if (debugSerialReady())
+  {
+    Serial.println("POKO woke up because of touch!");
+  }
 }
 
 // ============================================================
@@ -717,8 +738,11 @@ void updateTouch()
         touchCount++;
       }
 
-      Serial.print("TOUCH START | Count: ");
-      Serial.println(touchCount);
+      if (debugSerialReady())
+      {
+        Serial.print("TOUCH START | Count: ");
+        Serial.println(touchCount);
+      }
 
       // ------------------------------------------------------
       // SLEEPY / SLEEPING
@@ -758,8 +782,11 @@ void updateTouch()
       {
         startAngryExpression();
 
-        Serial.println(
-            "POKO: Too much poking! 😠");
+        if (debugSerialReady())
+        {
+          Serial.println(
+              "POKO: Too much poking! 😠");
+        }
 
         // Reset sequence.
         touchCount = 0;
@@ -780,8 +807,11 @@ void updateTouch()
         startHappyExpression(
             EXCITED_HAPPY_DURATION);
 
-        Serial.println(
-            "POKO is excited!");
+        if (debugSerialReady())
+        {
+          Serial.println(
+              "POKO is excited!");
+        }
 
         return;
       }
@@ -804,8 +834,11 @@ void updateTouch()
 
       if (angryExpression || angryLeaving)
       {
-        Serial.println(
-            "POKO is still angry.");
+        if (debugSerialReady())
+        {
+          Serial.println(
+              "POKO is still angry.");
+        }
 
         // IMPORTANT:
         // Do not trigger Happy here.
@@ -819,14 +852,17 @@ void updateTouch()
 
       if (longTouchDetected)
       {
-        Serial.print(
-            "POKO was petted for ");
+        if (debugSerialReady())
+        {
+          Serial.print(
+              "POKO was petted for ");
 
-        Serial.print(
-            touchDuration);
+          Serial.print(
+              touchDuration);
 
-        Serial.println(
-            " ms");
+          Serial.println(
+              " ms");
+        }
 
         if (
             pokoState == POKO_AWAKE)
@@ -842,8 +878,11 @@ void updateTouch()
           happyLeaving = false;
           happyTransition = 0.0f;
 
-          Serial.println(
-              "POKO is calming down...");
+          if (debugSerialReady())
+          {
+            Serial.println(
+                "POKO is calming down...");
+          }
         }
 
         touchHoldActive = false;
@@ -861,8 +900,11 @@ void updateTouch()
 
       if (repeatedTouch)
       {
-        Serial.println(
-            "POKO detected repeated interaction.");
+        if (debugSerialReady())
+        {
+          Serial.println(
+              "POKO detected repeated interaction.");
+        }
 
         // IMPORTANT:
         //
@@ -936,8 +978,11 @@ void updateTouch()
       longTouchDetected = true;
       touchHoldActive = true;
 
-      Serial.println(
-          "POKO is being petted...");
+      if (debugSerialReady())
+      {
+        Serial.println(
+            "POKO is being petted...");
+      }
 
       startHappyExpression(
           NORMAL_HAPPY_DURATION);
@@ -969,8 +1014,11 @@ void resetAwakeTimer()
 
     lastInteractionTime = stateStartTime;
 
-    Serial.println(
-        "POKO awake timer reset.");
+    if (debugSerialReady())
+    {
+      Serial.println(
+          "POKO awake timer reset.");
+    }
   }
 }
 
@@ -1107,6 +1155,11 @@ void printDebugStatus()
   {
     lastDebugPrint = now;
 
+    if (!debugSerialReady())
+    {
+      return;
+    }
+
     Serial.print("STATE: ");
     Serial.print(getStateName(pokoState));
 
@@ -1174,8 +1227,11 @@ void updatePokoState()
       pupilX = 0;
       pupilY = 0;
 
-      Serial.println(
-          "POKO is getting sleepy...");
+      if (debugSerialReady())
+      {
+        Serial.println(
+            "POKO is getting sleepy...");
+      }
     }
 
     break;
@@ -1197,8 +1253,11 @@ void updatePokoState()
       sleepCloseAmount = 1.0;
       eyeCloseAmount = 1.0;
 
-      Serial.println(
-          "POKO is sleeping...");
+      if (debugSerialReady())
+      {
+        Serial.println(
+            "POKO is sleeping...");
+      }
     }
 
     break;
@@ -1225,8 +1284,11 @@ void updatePokoState()
 
       touchWakeReaction = false;
 
-      Serial.println(
-          "POKO is waking up...");
+      if (debugSerialReady())
+      {
+        Serial.println(
+            "POKO is waking up...");
+      }
     }
 
     break;
@@ -1275,13 +1337,19 @@ void updatePokoState()
           happyStartTime = millis();
           happyLeaving = false;
 
-          Serial.println(
-              "POKO is happy to see you!");
+          if (debugSerialReady())
+          {
+            Serial.println(
+                "POKO is happy to see you!");
+          }
         }
       }
 
-      Serial.println(
-          "POKO is awake!");
+      if (debugSerialReady())
+      {
+        Serial.println(
+            "POKO is awake!");
+      }
     }
 
     break;
@@ -1514,7 +1582,7 @@ void drawAngryEye(
 // No touch, duration, state, blink, or expression timing logic is changed.
 
 void drawMorphPolyline(
-    const int* points,
+    const int *points,
     int pointCount,
     float amount)
 {
@@ -1601,15 +1669,14 @@ void drawHappyEyeMorph(
   }
 
   const int curve[] =
-  {
-    x + 13, y + 20,
-    x + 17, y + 16,
-    x + 22, y + 13,
-    x + 26, y + 12,
-    x + 30, y + 13,
-    x + 35, y + 16,
-    x + 39, y + 20
-  };
+      {
+          x + 13, y + 20,
+          x + 17, y + 16,
+          x + 22, y + 13,
+          x + 26, y + 12,
+          x + 30, y + 13,
+          x + 35, y + 16,
+          x + 39, y + 20};
 
   drawMorphPolyline(curve, 7, amount);
 
@@ -1636,25 +1703,23 @@ void drawHappySmileMorph(float amount)
   display.setDrawColor(1);
 
   const int smileOuter[] =
-  {
-    53, 52,
-    56, 55,
-    60, 57,
-    64, 58,
-    68, 57,
-    72, 55,
-    75, 52
-  };
+      {
+          53, 52,
+          56, 55,
+          60, 57,
+          64, 58,
+          68, 57,
+          72, 55,
+          75, 52};
 
   const int smileInner[] =
-  {
-    56, 55,
-    59, 59,
-    62, 61,
-    66, 61,
-    69, 59,
-    72, 55
-  };
+      {
+          56, 55,
+          59, 59,
+          62, 61,
+          66, 61,
+          69, 59,
+          72, 55};
 
   drawMorphPolyline(smileOuter, 7, amount);
   drawMorphPolyline(smileInner, 6, amount);
@@ -1728,33 +1793,29 @@ void drawAngryEyeMorph(
 // ============================================================
 
 void drawHeart(
-  int cx,
-  int cy,
-  int size
-)
+    int cx,
+    int cy,
+    int size)
 {
   display.setDrawColor(1);
 
   display.drawDisc(
-    cx - size / 3,
-    cy - size / 4,
-    size / 3
-  );
+      cx - size / 3,
+      cy - size / 4,
+      size / 3);
 
   display.drawDisc(
-    cx + size / 3,
-    cy - size / 4,
-    size / 3
-  );
+      cx + size / 3,
+      cy - size / 4,
+      size / 3);
 
   display.drawTriangle(
-    cx - size / 2,
-    cy - size / 6,
-    cx + size / 2,
-    cy - size / 6,
-    cx,
-    cy + size / 2
-  );
+      cx - size / 2,
+      cy - size / 6,
+      cx + size / 2,
+      cy - size / 6,
+      cx,
+      cy + size / 2);
 
   display.setDrawColor(1);
 }
@@ -1767,10 +1828,10 @@ void drawTooExcitedEyes()
 {
   // Gentle breathing pulse: 18 -> 21 -> 18
   unsigned long elapsed =
-    millis() - touchStartTime;
+      millis() - touchStartTime;
 
   float phase =
-    (float)(elapsed % 1600) / 1600.0f;
+      (float)(elapsed % 1600) / 1600.0f;
 
   float pulse;
 
@@ -1784,23 +1845,21 @@ void drawTooExcitedEyes()
   }
 
   pulse =
-    pulse * pulse *
-    (3.0f - 2.0f * pulse);
+      pulse * pulse *
+      (3.0f - 2.0f * pulse);
 
   int heartSize =
-    18 + (int)(3.0f * pulse);
+      18 + (int)(3.0f * pulse);
 
   drawHeart(
-    LEFT_EYE_X + EYE_W / 2,
-    EYE_Y + EYE_H / 2,
-    heartSize
-  );
+      LEFT_EYE_X + EYE_W / 2,
+      EYE_Y + EYE_H / 2,
+      heartSize);
 
   drawHeart(
-    RIGHT_EYE_X + EYE_W / 2,
-    EYE_Y + EYE_H / 2,
-    heartSize
-  );
+      RIGHT_EYE_X + EYE_W / 2,
+      EYE_Y + EYE_H / 2,
+      heartSize);
 }
 
 // ============================================================
@@ -1816,9 +1875,8 @@ void drawFace()
   // ==========================================================
 
   if (
-    pokoState == POKO_AWAKE &&
-    touchHoldActive
-  )
+      pokoState == POKO_AWAKE &&
+      touchHoldActive)
   {
     drawTooExcitedEyes();
 
@@ -1921,12 +1979,15 @@ void setup()
 
   delay(300);
 
-  Serial.println();
-  Serial.println("==============================");
-  Serial.println("          POKO");
-  Serial.println("   A tiny life on your desk");
-  Serial.println("==============================");
-  Serial.println();
+  if (debugSerialReady())
+  {
+    Serial.println();
+    Serial.println("==============================");
+    Serial.println("          POKO");
+    Serial.println("   A tiny life on your desk");
+    Serial.println("==============================");
+    Serial.println();
+  }
 
   // ----------------------------------------------------------
   // Touch sensor
@@ -2036,12 +2097,15 @@ void setup()
 
   lastDebugPrint = millis();
 
-  Serial.println("OLED initialized.");
-  Serial.println("POKO eyes starting...");
-  Serial.println("Sleep/wake system enabled.");
-  Serial.println("Touch reactions enabled.");
-  Serial.println("Angry reaction enabled.");
-  Serial.println();
+  if (debugSerialReady())
+  {
+    Serial.println("OLED initialized.");
+    Serial.println("POKO eyes starting...");
+    Serial.println("Sleep/wake system enabled.");
+    Serial.println("Touch reactions enabled.");
+    Serial.println("Angry reaction enabled.");
+    Serial.println();
+  }
 }
 
 // ============================================================
