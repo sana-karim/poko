@@ -2576,8 +2576,12 @@ void drawClockScreen()
     return;
   }
 
+  char dateText[24];
   char timeText[16];
   char ampm[3];
+
+  // Date: Fri 17 Apr. 2026
+  strftime(dateText, sizeof(dateText), "%a %d %b. %Y", &timeInfo);
 
   int hour12 = timeInfo.tm_hour % 12;
   if (hour12 == 0)
@@ -2590,18 +2594,77 @@ void drawClockScreen()
   snprintf(
       timeText,
       sizeof(timeText),
-      "%02d:%02d:%02d",
+      "%02d:%02d %s",
       hour12,
       timeInfo.tm_min,
-      timeInfo.tm_sec);
+      ampm);
+
+  // Date
+  display.setFont(u8g2_font_6x12_tr);
+  int width = display.getStrWidth(dateText);
+  display.drawStr((SCREEN_W - width) / 2, 10, dateText);
+
+  // Dotted separator between date and time.
+  for (int x = 8; x < SCREEN_W - 8; x += 4)
+  {
+    display.drawPixel(x, 17);
+  }
+
+  // Time
+  // Keep AM/PM at the existing size, but increase only HH:MM by one size.
+  char hourMinText[8];
+  snprintf(
+      hourMinText,
+      sizeof(hourMinText),
+      "%02d:%02d",
+      hour12,
+      timeInfo.tm_min);
+
+  display.setFont(u8g2_font_helvB24_tr);
+  int hourMinWidth = display.getStrWidth(hourMinText);
 
   display.setFont(u8g2_font_helvB14_tr);
-  int width = display.getStrWidth(timeText);
-  display.drawStr((SCREEN_W - width) / 2, 38, timeText);
+  int ampmWidth = display.getStrWidth(ampm);
 
-  display.setFont(u8g2_font_6x12_tr);
-  width = display.getStrWidth(ampm);
-  display.drawStr((SCREEN_W - width) / 2, 55, ampm);
+  const int timeGap = 3;
+  const int totalTimeWidth = hourMinWidth + timeGap + ampmWidth;
+  const int timeX = (SCREEN_W - totalTimeWidth) / 2;
+
+  // Vertically center the complete time between the dotted date separator
+  // and the bottom seconds line. Keep both separator positions unchanged.
+  const int topBoundary = 17;
+  // const int bottomBoundary = 57;
+  const int bottomBoundary = 52;
+  const int centerY = (topBoundary + bottomBoundary) / 2;
+
+  display.setFont(u8g2_font_helvB24_tr);
+  const int timeAscent = display.getAscent();
+  const int timeDescent = display.getDescent();
+  const int timeBaseline = centerY + (timeAscent - timeDescent) / 2;
+
+  display.drawStr(timeX, timeBaseline, hourMinText);
+
+  display.setFont(u8g2_font_helvB14_tr);
+  display.drawStr(timeX + hourMinWidth + timeGap, timeBaseline, ampm);
+
+  // Seconds progress: 0 -> 60.
+  // The line fills one second at a time and resets at the next minute.
+  const int progressX = 16;
+  const int progressWidth = SCREEN_W - 32;
+  const int progressY = 60;
+
+  // Background dotted line.
+  for (int x = progressX; x <= progressX + progressWidth; x += 2)
+  {
+    display.drawPixel(x, progressY);
+  }
+
+  // Fill according to the current second.
+  int filledWidth = (timeInfo.tm_sec * progressWidth) / 60;
+  if (timeInfo.tm_sec > 0)
+  {
+    display.drawBox(progressX, progressY - 1, filledWidth + 1, 3);
+  }
 }
 
 const char *windDirectionText(float degrees)
