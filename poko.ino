@@ -1,6 +1,10 @@
 #include <Arduino.h>
 #include <Wire.h>
 #include <U8g2lib.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <WiFiClientSecure.h>
+#include <time.h>
 
 // ============================================================
 // POKO
@@ -13,6 +17,7 @@
 // 😊 Happy expression
 // 😠 Angry expression
 // 👆 Touch reactions
+// 📶 Wi-Fi + NTP time + weather
 //
 // ============================================================
 
@@ -34,6 +39,52 @@ U8G2_SH1106_128X64_NONAME_F_HW_I2C display(
 
 const int SCREEN_W = 128;
 const int SCREEN_H = 64;
+
+const char *POKO_BUILD_VERSION = "v0.6.1-weather-ui-v7";
+const char *POKO_BUILD_NAME = "WEATHER UI - NO HEADER LINE";
+
+// ============================================================
+// v0.6.0 - WI-FI / TIME / WEATHER
+// ============================================================
+// Set your Wi-Fi credentials here before compiling.
+// Weather location is Patna, Bihar, India.
+// Open-Meteo is used without an API key.
+// ============================================================
+
+const char *WIFI_SSID = "Airtel_Zerotouch";
+const char *WIFI_PASSWORD = "Airtel@123";
+
+const float WEATHER_LATITUDE = 25.5941f;
+const float WEATHER_LONGITUDE = 85.1376f;
+const char *WEATHER_CITY = "PATNA";
+
+const unsigned long WEATHER_UPDATE_INTERVAL = 30UL * 60UL * 1000UL;
+const unsigned long WIFI_CONNECT_TIMEOUT = 15000;
+const unsigned long INFO_TRANSITION_TIME = 900;
+
+bool wifiReady = false;
+bool timeReady = false;
+
+float weatherTemperature = 0.0f;
+int weatherCode = -1;
+float weatherHumidity = 0.0f;
+float weatherWindSpeed = 0.0f;
+float weatherWindDirection = 0.0f;
+float weatherPrecipitation = 0.0f;
+bool weatherValid = false;
+unsigned long lastWeatherUpdate = 0;
+
+// Information display mode.
+enum InfoMode
+{
+  INFO_NONE,
+  INFO_CLOCK,
+  INFO_WEATHER
+};
+
+InfoMode infoMode = INFO_NONE;
+unsigned long infoModeStartTime = 0;
+bool infoExitArmed = false;
 
 // ============================================================
 // EYES
@@ -242,6 +293,14 @@ const float EXPRESSION_TRANSITION_SPEED = 0.08f;
 
 void resetAwakeTimer();
 void wakePokoFromTouch();
+
+void enterInfoMode(InfoMode mode);
+void exitInfoMode();
+void connectWiFi();
+void syncTimeFromNTP();
+void updateWeather();
+
+const char *weatherDescription(int code);
 
 // ============================================================
 // SMOOTH MOVEMENT
@@ -605,6 +664,544 @@ void updateAngryExpression()
 }
 
 // ============================================================
+// v0.6.0 - WIFI / TIME / WEATHER HELPERS
+// ============================================================
+
+void connectWiFi()
+{
+  if (debugSerialReady())
+  {
+    Serial.println("[WIFI] connectWiFi() called");
+    Serial.print("[WIFI] Current status: ");
+    Serial.println(WiFi.status());
+    wl_status_t status = WiFi.status();
+
+    Serial.printf("[WIFI] Current status: %d\n", status);
+
+    switch (status)
+    {
+    case WL_CONNECTED:
+      Serial.println("[WIFI] Status: CONNECTED");
+      break;
+
+    case WL_NO_SSID_AVAIL:
+      Serial.println("[WIFI] Status: NO SSID AVAILABLE");
+      break;
+
+    case WL_CONNECT_FAILED:
+      Serial.println("[WIFI] Status: CONNECT FAILED");
+      break;
+
+    case WL_CONNECTION_LOST:
+      Serial.println("[WIFI] Status: CONNECTION LOST");
+      break;
+
+    case WL_DISCONNECTED:
+      Serial.println("[WIFI] Status: DISCONNECTED");
+      break;
+
+    default:
+      Serial.println("[WIFI] Status: UNKNOWN / ESP32-specific state");
+      break;
+    }
+  }
+
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    wifiReady = true;
+
+    if (debugSerialReady())
+    {
+      Serial.println("[WIFI] Already connected");
+      Serial.print("[WIFI] IP: ");
+      Serial.println(WiFi.localIP());
+      Serial.print("[WIFI] RSSI: ");
+      Serial.println(WiFi.RSSI());
+    }
+
+    return;
+  }
+
+  if (WIFI_SSID[0] == '\0')
+  {
+    wifiReady = false;
+
+    if (debugSerialReady())
+    {
+      Serial.println("[WIFI] ERROR: SSID is empty/default");
+    }
+
+    return;
+  }
+
+  Serial.printf("[WIFI TEST] SSID length: %d\n", strlen(WIFI_SSID));
+  Serial.printf("[WIFI TEST] Password length: %d\n", strlen(WIFI_PASSWORD));
+
+  Serial.println("[WIFI TEST] About to call WiFi.begin()");
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+
+  Serial.println("[WIFI TEST] WiFi.begin() called");
+
+  if (debugSerialReady())
+  {
+    Serial.print("[WIFI] Connecting to: ");
+    Serial.println(WIFI_SSID);
+  }
+
+  unsigned long start = millis();
+  unsigned long lastLog = 0;
+
+  while (WiFi.status() != WL_CONNECTED &&
+         millis() - start < WIFI_CONNECT_TIMEOUT)
+  {
+    delay(20);
+
+    if (millis() - lastLog >= 1000)
+    {
+      lastLog = millis();
+
+      if (debugSerialReady())
+      {
+        Serial.print("[WIFI] Waiting... status=");
+        Serial.print(WiFi.status());
+        Serial.print(" elapsed=");
+        Serial.print(millis() - start);
+        Serial.println(" ms");
+      }
+    }
+  }
+
+  wifiReady = WiFi.status() == WL_CONNECTED;
+
+  if (debugSerialReady())
+  {
+    if (wifiReady)
+    {
+      Serial.println("[WIFI] CONNECTED");
+      Serial.print("[WIFI] IP: ");
+      Serial.println(WiFi.localIP());
+      Serial.print("[WIFI] RSSI: ");
+      Serial.println(WiFi.RSSI());
+    }
+    else
+    {
+      Serial.println("[WIFI] FAILED to connect");
+      Serial.print("[WIFI] Final status: ");
+      Serial.println(WiFi.status());
+    }
+  }
+}
+
+void syncTimeFromNTP()
+{
+  if (debugSerialReady())
+  {
+    Serial.println("[NTP] syncTimeFromNTP() called");
+  }
+
+  if (!wifiReady)
+  {
+    timeReady = false;
+
+    if (debugSerialReady())
+    {
+      Serial.println("[NTP] SKIPPED: WiFi is not ready");
+    }
+
+    return;
+  }
+
+  configTzTime("IST-5:30", "pool.ntp.org", "time.nist.gov");
+
+  if (debugSerialReady())
+  {
+    Serial.println("[NTP] Waiting for time...");
+  }
+
+  struct tm timeInfo;
+  unsigned long start = millis();
+
+  while (!getLocalTime(&timeInfo, 100) &&
+         millis() - start < 5000)
+  {
+  }
+
+  timeReady = getLocalTime(&timeInfo, 10);
+
+  if (debugSerialReady())
+  {
+    if (timeReady)
+    {
+      Serial.println("[NTP] TIME READY");
+      Serial.printf("[NTP] %02d:%02d:%02d %02d/%02d/%04d\n",
+                    timeInfo.tm_hour,
+                    timeInfo.tm_min,
+                    timeInfo.tm_sec,
+                    timeInfo.tm_mday,
+                    timeInfo.tm_mon + 1,
+                    timeInfo.tm_year + 1900);
+    }
+    else
+    {
+      Serial.println("[NTP] FAILED: time not available");
+    }
+  }
+}
+
+void updateWeather()
+{
+  if (debugSerialReady())
+  {
+    Serial.println("[WEATHER] updateWeather() called");
+  }
+
+  if (weatherValid &&
+      millis() - lastWeatherUpdate < WEATHER_UPDATE_INTERVAL)
+  {
+    return;
+  }
+
+  connectWiFi();
+
+  if (!wifiReady)
+  {
+    if (debugSerialReady())
+    {
+      Serial.println("[WEATHER] ABORTED: WiFi not connected");
+    }
+    return;
+  }
+
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  HTTPClient http;
+
+  String url =
+      "https://api.open-meteo.com/v1/forecast?latitude=" +
+      String(WEATHER_LATITUDE, 4) +
+      "&longitude=" +
+      String(WEATHER_LONGITUDE, 4) +
+      "&current=temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code,wind_speed_10m,wind_direction_10m,pressure_msl&timezone=Asia%2FKolkata";
+
+  if (debugSerialReady())
+  {
+    Serial.println("[WEATHER] Opening Open-Meteo connection...");
+  }
+
+  if (!http.begin(client, url))
+  {
+    if (debugSerialReady())
+    {
+      Serial.println("[WEATHER] ERROR: http.begin() failed");
+    }
+    return;
+  }
+
+  http.setTimeout(7000);
+
+  if (debugSerialReady())
+  {
+    Serial.println("[WEATHER] Sending HTTP GET...");
+  }
+
+  int httpCode = http.GET();
+
+  if (debugSerialReady())
+  {
+    Serial.print("[WEATHER] HTTP code: ");
+    Serial.println(httpCode);
+  }
+
+  if (httpCode == HTTP_CODE_OK)
+  {
+    String payload = http.getString();
+
+    // Open-Meteo includes the same field names in current_units and current.
+    // Parse only inside the current object so unit strings cannot be matched.
+    int currentKey = payload.indexOf("\"current\"");
+    int currentStart = -1;
+    int currentEnd = -1;
+
+    if (currentKey >= 0)
+    {
+      currentStart = payload.indexOf('{', currentKey);
+      if (currentStart >= 0)
+      {
+        currentEnd = payload.indexOf('}', currentStart);
+      }
+    }
+
+    auto extractCurrentNumber = [&](const char *key, float &value) -> bool
+    {
+      if (currentStart < 0 || currentEnd <= currentStart)
+      {
+        return false;
+      }
+
+      String token = String("\"") + key + "\"";
+      int keyPos = payload.indexOf(token, currentStart);
+
+      if (keyPos < 0 || keyPos >= currentEnd)
+      {
+        return false;
+      }
+
+      int colon = payload.indexOf(':', keyPos + token.length());
+      if (colon < 0 || colon >= currentEnd)
+      {
+        return false;
+      }
+
+      int valueStart = colon + 1;
+      while (valueStart < currentEnd)
+      {
+        char c = payload.charAt(valueStart);
+        if (c == ' ' || c == '\n' || c == '\r' || c == '\t')
+        {
+          valueStart++;
+        }
+        else
+        {
+          break;
+        }
+      }
+
+      int valueEnd = valueStart;
+      while (valueEnd < currentEnd)
+      {
+        char c = payload.charAt(valueEnd);
+        if ((c >= '0' && c <= '9') || c == '-' || c == '+' ||
+            c == '.' || c == 'e' || c == 'E')
+        {
+          valueEnd++;
+        }
+        else
+        {
+          break;
+        }
+      }
+
+      if (valueEnd <= valueStart)
+      {
+        return false;
+      }
+
+      String valueText = payload.substring(valueStart, valueEnd);
+      value = valueText.toFloat();
+      return true;
+    };
+
+    float temperature = 0.0f;
+    float humidity = 0.0f;
+    float precipitation = 0.0f;
+    float windSpeed = 0.0f;
+    float windDirection = 0.0f;
+    float codeFloat = -1.0f;
+
+    bool tempOK = extractCurrentNumber("temperature_2m", temperature);
+    bool humidityOK = extractCurrentNumber("relative_humidity_2m", humidity);
+    bool precipitationOK = extractCurrentNumber("precipitation", precipitation);
+    bool codeOK = extractCurrentNumber("weather_code", codeFloat);
+    bool windSpeedOK = extractCurrentNumber("wind_speed_10m", windSpeed);
+    bool windDirectionOK = extractCurrentNumber("wind_direction_10m", windDirection);
+
+    if (debugSerialReady())
+    {
+      Serial.printf(
+          "[WEATHER DEBUG] current=%d..%d temp=%d humidity=%d code=%d wind=%d/%d precip=%d\n",
+          currentStart,
+          currentEnd,
+          tempOK,
+          humidityOK,
+          codeOK,
+          windSpeedOK,
+          windDirectionOK,
+          precipitationOK);
+    }
+
+    if (tempOK && codeOK)
+    {
+      weatherTemperature = temperature;
+      weatherCode = (int)codeFloat;
+
+      if (humidityOK)
+      {
+        weatherHumidity = humidity;
+      }
+
+      if (precipitationOK)
+      {
+        weatherPrecipitation = precipitation;
+      }
+
+      if (windSpeedOK)
+      {
+        weatherWindSpeed = windSpeed;
+      }
+
+      if (windDirectionOK)
+      {
+        weatherWindDirection = windDirection;
+      }
+
+      weatherValid = true;
+      lastWeatherUpdate = millis();
+
+      if (debugSerialReady())
+      {
+        Serial.printf(
+            "[WEATHER] %.1f C | humidity %.0f%% | wind %.1f km/h @ %.0f deg | precip %.1f mm\n",
+            weatherTemperature,
+            weatherHumidity,
+            weatherWindSpeed,
+            weatherWindDirection,
+            weatherPrecipitation);
+      }
+    }
+    else if (debugSerialReady())
+    {
+      Serial.println("[WEATHER] ERROR: required current weather values missing");
+    }
+  }
+
+  http.end();
+
+  // Wi-Fi is only needed for synchronization/data retrieval.
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_OFF);
+  wifiReady = false;
+}
+
+const char *weatherDescription(int code)
+{
+  switch (code)
+  {
+  case 0:
+    return "CLEAR";
+  case 1:
+  case 2:
+    return "PARTLY CLOUDY";
+  case 3:
+    return "CLOUDY";
+  case 45:
+  case 48:
+    return "FOGGY";
+  case 51:
+  case 53:
+  case 55:
+  case 56:
+  case 57:
+    return "DRIZZLE";
+  case 61:
+  case 63:
+  case 65:
+  case 66:
+  case 67:
+    return "RAIN";
+  case 71:
+  case 73:
+  case 75:
+  case 77:
+    return "SNOW";
+  case 80:
+  case 81:
+  case 82:
+    return "SHOWERS";
+  case 85:
+  case 86:
+    return "SNOW SHOWERS";
+  case 95:
+  case 96:
+  case 99:
+    return "STORM";
+  default:
+    return "UNKNOWN";
+  }
+}
+
+void enterInfoMode(InfoMode mode)
+{
+  infoMode = mode;
+  infoModeStartTime = millis();
+  infoExitArmed = false;
+
+  // Information screens must never fall asleep.
+  lastInteractionTime = millis();
+
+  // Keep POKO centered/awake while showing information.
+  pokoState = POKO_AWAKE;
+  stateStartTime = millis();
+  blinking = false;
+  blinkCloseAmount = 0.0f;
+  eyeCloseAmount = 0.0f;
+  sleepCloseAmount = 0.0f;
+
+  happyExpression = false;
+  happyLeaving = false;
+  happyTransition = 0.0f;
+  angryExpression = false;
+  angryLeaving = false;
+  angryTransition = 0.0f;
+
+  targetPupilX = 0;
+  targetPupilY = 0;
+  pupilX = 0;
+  pupilY = 0;
+
+  if (debugSerialReady())
+  {
+    Serial.print("[INFO] Opening mode: ");
+    Serial.println(mode == INFO_CLOCK ? "CLOCK" : "WEATHER");
+  }
+
+  if (mode == INFO_CLOCK)
+  {
+    if (!timeReady)
+    {
+      connectWiFi();
+      syncTimeFromNTP();
+      WiFi.disconnect(true);
+      WiFi.mode(WIFI_OFF);
+      wifiReady = false;
+    }
+  }
+  else if (mode == INFO_WEATHER)
+  {
+    if (!timeReady)
+    {
+      connectWiFi();
+      syncTimeFromNTP();
+    }
+
+    updateWeather();
+  }
+
+  // Do not let the information gesture become another POKO tap.
+  touchCount = 0;
+  firstTouchTime = 0;
+  longTouchDetected = true;
+  touchHoldActive = false;
+}
+
+void exitInfoMode()
+{
+  infoMode = INFO_NONE;
+  infoExitArmed = false;
+
+  // Clear the gesture that opened the information screen.
+  touchCount = 0;
+  firstTouchTime = 0;
+  longTouchDetected = false;
+  touchHoldActive = false;
+
+  resetAwakeTimer();
+  chooseLookDirection();
+}
+
+// ============================================================
 // WAKE POKO FROM TOUCH
 // ============================================================
 
@@ -691,6 +1288,37 @@ void updateTouch()
       now - lastTouchChangeTime <
       TOUCH_DEBOUNCE)
   {
+    return;
+  }
+
+  // ==========================================================
+  // INFORMATION MODE
+  // ==========================================================
+  // A tap or a hold exits the information screen. No tap
+  // counting, sleep logic, or expression reaction is allowed
+  // while Clock/Weather is being displayed.
+
+  if (infoMode != INFO_NONE)
+  {
+    if (currentTouch != touchState)
+    {
+      touchState = currentTouch;
+
+      // The release that completes the Clock/Weather opening
+      // gesture must NOT close the information screen.
+      if (!touchState)
+      {
+        if (infoExitArmed)
+        {
+          exitInfoMode();
+        }
+        else
+        {
+          infoExitArmed = true;
+        }
+      }
+    }
+
     return;
   }
 
@@ -976,6 +1604,42 @@ void updateTouch()
             LONG_TOUCH_TIME)
     {
       longTouchDetected = true;
+
+      // ------------------------------------------------------
+      // v0.6.0 INFORMATION GESTURES
+      //
+      // 1 tap + hold  = Clock
+      // 2 taps + hold = Weather
+      //
+      // The current hold itself is counted as the next touch,
+      // therefore 1 tap + hold = 2 and 2 taps + hold = 3.
+      // ------------------------------------------------------
+
+      if (touchCount == 2)
+      {
+        enterInfoMode(INFO_CLOCK);
+
+        if (debugSerialReady())
+        {
+          Serial.println("POKO: Clock mode");
+        }
+
+        return;
+      }
+
+      if (touchCount == 3)
+      {
+        enterInfoMode(INFO_WEATHER);
+
+        if (debugSerialReady())
+        {
+          Serial.println("POKO: Weather mode");
+        }
+
+        return;
+      }
+
+      // Original v0.5.1 hold behavior remains unchanged.
       touchHoldActive = true;
 
       if (debugSerialReady())
@@ -1176,7 +1840,21 @@ void printDebugStatus()
     Serial.print(touchCount);
 
     Serial.print(" | eyeClose: ");
-    Serial.println(eyeCloseAmount, 3);
+    Serial.print(eyeCloseAmount, 3);
+
+    Serial.print(" | INFO: ");
+    if (infoMode == INFO_CLOCK)
+    {
+      Serial.println("CLOCK");
+    }
+    else if (infoMode == INFO_WEATHER)
+    {
+      Serial.println("WEATHER");
+    }
+    else
+    {
+      Serial.println("NONE");
+    }
   }
 }
 
@@ -1187,6 +1865,12 @@ void printDebugStatus()
 void updatePokoState()
 {
   unsigned long now = millis();
+
+  // Clock/Weather never sleep.
+  if (infoMode != INFO_NONE)
+  {
+    return;
+  }
 
   switch (pokoState)
   {
@@ -1863,11 +2547,287 @@ void drawTooExcitedEyes()
 }
 
 // ============================================================
+// DRAW INFORMATION SCREENS
+// ============================================================
+
+void drawCenteredText(const char *text, int y, uint8_t font = 1)
+{
+  if (font == 2)
+  {
+    display.setFont(u8g2_font_helvB14_tr);
+  }
+  else
+  {
+    display.setFont(u8g2_font_6x12_tr);
+  }
+
+  int width = display.getStrWidth(text);
+  int x = (SCREEN_W - width) / 2;
+  display.drawStr(x, y, text);
+}
+
+void drawClockScreen()
+{
+  struct tm timeInfo;
+
+  if (!getLocalTime(&timeInfo, 5))
+  {
+    drawCenteredText("TIME NOT READY", 36);
+    return;
+  }
+
+  char timeText[16];
+  char ampm[3];
+
+  int hour12 = timeInfo.tm_hour % 12;
+  if (hour12 == 0)
+  {
+    hour12 = 12;
+  }
+
+  strftime(ampm, sizeof(ampm), "%p", &timeInfo);
+
+  snprintf(
+      timeText,
+      sizeof(timeText),
+      "%02d:%02d:%02d",
+      hour12,
+      timeInfo.tm_min,
+      timeInfo.tm_sec);
+
+  display.setFont(u8g2_font_helvB14_tr);
+  int width = display.getStrWidth(timeText);
+  display.drawStr((SCREEN_W - width) / 2, 38, timeText);
+
+  display.setFont(u8g2_font_6x12_tr);
+  width = display.getStrWidth(ampm);
+  display.drawStr((SCREEN_W - width) / 2, 55, ampm);
+}
+
+const char *windDirectionText(float degrees)
+{
+  static const char *directions[] = {
+      "N", "NNE", "NE", "ENE",
+      "E", "ESE", "SE", "SSE",
+      "S", "SSW", "SW", "WSW",
+      "W", "WNW", "NW", "NNW"};
+
+  int index = (int)((degrees + 11.25f) / 22.5f) % 16;
+  return directions[index];
+}
+
+void drawCloudShape(int cx, int cy)
+{
+  display.drawDisc(cx - 5, cy + 2, 7);
+  display.drawDisc(cx + 4, cy, 8);
+  display.drawDisc(cx + 13, cy + 4, 6);
+  display.drawRBox(cx - 12, cy + 3, 31, 10, 4);
+}
+
+void drawSunShape(int cx, int cy, int radius, bool hideHorizontalRays = false)
+{
+  display.drawDisc(cx, cy, radius);
+  for (int i = 0; i < 8; i++)
+  {
+    if (hideHorizontalRays && (i == 0 || i == 4))
+      continue;
+    float a = i * 0.785398f;
+    int x1 = cx + (int)((radius + 4) * cos(a));
+    int y1 = cy + (int)((radius + 4) * sin(a));
+    int x2 = cx + (int)((radius + 9) * cos(a));
+    int y2 = cy + (int)((radius + 9) * sin(a));
+    display.drawLine(x1, y1, x2, y2);
+  }
+}
+
+void drawWeatherIcon(int code)
+{
+  // Compact 34x34 monochrome weather icon for the 128x64 OLED.
+  const int cx = 17;
+  const int cy = 25;
+
+  display.setDrawColor(1);
+
+  if (code == 0)
+  {
+    drawSunShape(cx, cy, 7);
+    return;
+  }
+
+  if (code == 1)
+  {
+    // Mainly clear: small sun behind a cloud.
+    drawSunShape(cx - 6, cy - 6, 4, true);
+    drawCloudShape(cx - 1, cy + 1);
+    return;
+  }
+
+  if (code == 2)
+  {
+    // Partly cloudy: larger cloud with visible sun.
+    drawSunShape(cx - 7, cy - 7, 4, true);
+    drawCloudShape(cx - 1, cy + 1);
+    return;
+  }
+
+  if (code == 3)
+  {
+    // Overcast.
+    drawCloudShape(cx - 1, cy);
+    drawCloudShape(cx - 5, cy - 5);
+    return;
+  }
+
+  if (code == 45 || code == 48)
+  {
+    // Fog: three horizontal layers.
+    display.drawLine(3, 17, 30, 17);
+    display.drawLine(1, 24, 33, 24);
+    display.drawLine(4, 31, 30, 31);
+    display.drawLine(7, 38, 27, 38);
+    return;
+  }
+
+  // Drizzle / rain / showers / snow / storm.
+  drawCloudShape(cx - 1, cy - 2);
+
+  if (code == 71 || code == 73 || code == 75 || code == 77)
+  {
+    // Snow: small flakes.
+    for (int i = 0; i < 3; i++)
+    {
+      int x = 8 + i * 9;
+      int y = 39;
+      display.drawLine(x - 2, y, x + 2, y);
+      display.drawLine(x, y - 2, x, y + 2);
+    }
+    return;
+  }
+
+  if (code >= 95)
+  {
+    // Thunderstorm: rain plus a simple lightning bolt.
+    display.drawLine(13, 36, 10, 42);
+    display.drawLine(10, 42, 14, 42);
+    display.drawLine(14, 42, 12, 47);
+    display.drawLine(22, 36, 19, 42);
+    display.drawLine(19, 42, 23, 42);
+    display.drawLine(23, 42, 21, 47);
+    return;
+  }
+
+  // Drizzle / rain / showers.
+  display.drawLine(10, 37, 8, 44);
+  display.drawLine(18, 37, 16, 44);
+  display.drawLine(26, 37, 24, 44);
+}
+
+void drawWeatherScreen()
+{
+  if (!weatherValid)
+  {
+    drawCenteredText("WEATHER", 22);
+    drawCenteredText("NO DATA", 42);
+    return;
+  }
+
+  // Keep the existing clean visual hierarchy, but use the available
+  // 128x64 area for useful weather details.
+  display.setFont(u8g2_font_6x12_tr);
+
+  // Header.
+  int width = display.getStrWidth(WEATHER_CITY);
+  display.drawStr((SCREEN_W - width) / 2, 10, WEATHER_CITY);
+  // Icon + temperature.
+  drawWeatherIcon(weatherCode);
+
+  // Draw the degree symbol separately. The selected U8g2 font may
+  // not render the UTF-8 "°" character correctly.
+  char tempText[16];
+  snprintf(tempText, sizeof(tempText), "%.0f", weatherTemperature);
+
+  display.setFont(u8g2_font_helvB14_tr);
+
+  int tempX = 39;
+  int tempWidth = display.getStrWidth(tempText);
+  display.drawStr(tempX, 35, tempText);
+
+  // Small degree symbol.
+  // One visual space between the temperature and °C.
+  int degreeX = tempX + tempWidth + 3;
+  display.drawCircle(degreeX + 2, 24, 2);
+
+  // Celsius stays attached to the degree symbol: 25 °C.
+  display.drawStr(degreeX + 5, 35, "C");
+
+  // Condition.
+  const char *description = weatherDescription(weatherCode);
+  display.setFont(u8g2_font_5x8_tr);
+  width = display.getStrWidth(description);
+  display.drawStr(39, 44, description);
+
+  // Bottom line: wind speed + direction + humidity.
+  char detailsText[32];
+  snprintf(
+      detailsText,
+      sizeof(detailsText),
+      "W %.0f km/h %s  H %.0f%%",
+      weatherWindSpeed,
+      windDirectionText(weatherWindDirection),
+      weatherHumidity);
+
+  width = display.getStrWidth(detailsText);
+  display.drawStr((SCREEN_W - width) / 2, 59, detailsText);
+}
+
+void drawInfoScreen()
+{
+  display.clearBuffer();
+  display.setDrawColor(1);
+
+  // Curious/look-at-you transition before information.
+  if (millis() - infoModeStartTime < INFO_TRANSITION_TIME)
+  {
+    drawEye(
+        LEFT_EYE_X,
+        EYE_Y,
+        0,
+        0);
+
+    drawEye(
+        RIGHT_EYE_X,
+        EYE_Y,
+        0,
+        0);
+
+    display.sendBuffer();
+    return;
+  }
+
+  if (infoMode == INFO_CLOCK)
+  {
+    drawClockScreen();
+  }
+  else if (infoMode == INFO_WEATHER)
+  {
+    drawWeatherScreen();
+  }
+
+  display.sendBuffer();
+}
+
+// ============================================================
 // DRAW COMPLETE FACE
 // ============================================================
 
 void drawFace()
 {
+  if (infoMode != INFO_NONE)
+  {
+    drawInfoScreen();
+    return;
+  }
+
   display.clearBuffer();
 
   // ==========================================================
@@ -1976,8 +2936,18 @@ void drawFace()
 void setup()
 {
   Serial.begin(115200);
-
   delay(300);
+
+  Serial.println();
+  Serial.println("========================================");
+  Serial.println("POKO BUILD IDENTIFICATION");
+  Serial.print("BUILD VERSION: ");
+  Serial.println(POKO_BUILD_VERSION);
+  Serial.print("BUILD NAME: ");
+  Serial.println(POKO_BUILD_NAME);
+  Serial.print("COMPILED SOURCE: ");
+  Serial.println(__FILE__);
+  Serial.println("========================================");
 
   if (debugSerialReady())
   {
@@ -1988,6 +2958,16 @@ void setup()
     Serial.println("==============================");
     Serial.println();
   }
+
+  // ----------------------------------------------------------
+  // v0.6.0 networking
+  // Wi-Fi starts OFF. It is enabled only when time/weather
+  // data is requested, then turned off again.
+  // ----------------------------------------------------------
+
+  WiFi.mode(WIFI_OFF);
+  wifiReady = false;
+  timeReady = false;
 
   // ----------------------------------------------------------
   // Touch sensor
